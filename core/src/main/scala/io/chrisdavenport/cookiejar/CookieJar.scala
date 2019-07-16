@@ -8,6 +8,11 @@ import org.http4s._
 import org.http4s.client.Client
 import scala.concurrent.duration._
 
+/**
+ * A CookieJar Middleware which enriches requests 
+ * and extracts `Set-Cookies` from the
+ * responses to be available for the next client calls.
+ */
 object CookieJar {
 
   def apply[F[_]: Sync](
@@ -29,18 +34,33 @@ object CookieJar {
     }
 
   def impl[F[_]: Sync: Timer](c: Client[F]): F[Client[F]] = 
-    CookieJarAlg.impl[F].map(apply(_)(c))
+    in[F, F](c)
+
+  def in[F[_]: Sync: Timer, G[_]: Sync](c: Client[F]): G[Client[F]] = 
+    CookieJarAlg.in[F, G].map(apply(_)(c))
 
   /**
    * Algebra for Interfacing with the Cookie Jar
    **/
   trait CookieJarAlg[F[_]]{
+    /**
+     * Default Expiration Approach, Removes Expired Cookies
+     */
     def evictExpired: F[Unit]
 
+    /**
+     * Available for Use To Relieve Memory Pressure
+     */
     def evictAll: F[Unit]
 
+    /**
+     * Add Cookie to the cookie jar
+     */
     def addCookie(c: ResponseCookie): F[Unit]
 
+    /**
+     * Enrich a Request with the cookies available
+     */
     def enrichRequest[G[_]](r: Request[G]): F[Request[G]]
   }
 
@@ -80,52 +100,54 @@ object CookieJar {
       }
   }
 
-  private final case class CookieKey(
+  private[cookiejar] final case class CookieKey(
     name: String,
     domain: Option[String],
     path: Option[String]
   )
 
-  private final case class CookieValue(
+  private[cookiejar] final case class CookieValue(
     setAt: HttpDate,
     cookie: ResponseCookie
   )
 
-  private def currentHttpDate[F[_]: Clock: MonadError[?[_], Throwable]] = 
+  private[cookiejar] def currentHttpDate[F[_]: Clock: MonadError[?[_], Throwable]] = 
     Clock[F].monotonic(SECONDS)
       .flatMap(s => HttpDate.fromEpochSecond(s).liftTo[F])
 
-  private def keyFromRespCookie(c: ResponseCookie): CookieKey =
+  private[cookiejar] def keyFromRespCookie(c: ResponseCookie): CookieKey =
     CookieKey(c.name, c.domain, c.path)
 
-  private def extractFromResponseCookie[F[_]](
+  private[cookiejar] def extractFromResponseCookie[F[_]](
     m: Map[CookieKey,CookieValue]
   )(c: ResponseCookie, httpDate: HttpDate): Map[CookieKey, CookieValue] = 
     m + (keyFromRespCookie(c) -> CookieValue(httpDate, c))
 
-  private def isExpiredByExpiration(
+  private[cookiejar] def isExpiredByExpiration(
     now: HttpDate
   )(m: (CookieKey, CookieValue)): Boolean = 
-    m._2.cookie.expires.exists(expiresAt => now <= expiresAt)
+    m._2.cookie.expires.exists(expiresAt => expiresAt <= now)
 
-  private def isExpiredByMaxAge(
+  private[cookiejar] def isExpiredByMaxAge(
     now: HttpDate
   )(m: (CookieKey, CookieValue)): Boolean = 
     m._2.cookie.maxAge.exists{plusSeconds => 
       val epochSecondExpiredAt = m._2.setAt.epochSecond + plusSeconds
-      now <= HttpDate.unsafeFromEpochSecond(epochSecondExpiredAt)
+      HttpDate.unsafeFromEpochSecond(epochSecondExpiredAt) <= now
     }
 
-  private def responseCookieToRequestCookie(r: ResponseCookie): RequestCookie =
+  private[cookiejar] def responseCookieToRequestCookie(r: ResponseCookie): RequestCookie =
     RequestCookie(r.name, r.content)
 
-  private def cookieAppliesToRequest[N[_]](r: Request[N], c: ResponseCookie): Boolean = {
-    val domainApplies = c.domain.forall(s => r.uri.host.forall(host => host.value.contains(s)))
+  private[cookiejar] def cookieAppliesToRequest[N[_]](r: Request[N], c: ResponseCookie): Boolean = {
+    val domainApplies = c.domain.exists(s => r.uri.host.forall{authority => 
+      authority.renderString.contains(s)
+    })
     val pathApplies = c.path.forall(s => r.uri.path.contains(s))
     domainApplies && pathApplies
   }
 
-  private def cookiesForRequest[N[_]](
+  private[cookiejar] def cookiesForRequest[N[_]](
     r: Request[N],
     l: List[ResponseCookie]
   ): List[RequestCookie] = l.foldLeft(List.empty[RequestCookie]){case (list, cookie) => 
