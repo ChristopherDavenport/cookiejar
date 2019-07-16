@@ -12,6 +12,10 @@ import scala.concurrent.duration._
  * A CookieJar Middleware which enriches requests 
  * and extracts `Set-Cookies` from the
  * responses to be available for the next client calls.
+ * 
+ * Implements what is outlined in 
+ * https://tools.ietf.org/html/rfc6265
+ * 
  */
 object CookieJar {
 
