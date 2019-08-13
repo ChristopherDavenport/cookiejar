@@ -7,7 +7,6 @@ import cats.effect.concurrent._
 import org.http4s._
 import org.http4s.client.Client
 import scala.concurrent.duration._
-import io.chrisdavenport.cookiejar.CookieJar.CookieValue
 
 /**
  * A CookieJar Middleware which enriches requests 
@@ -32,7 +31,7 @@ object CookieJarMiddleware {
         out <- client.run(modRequest)
         _ <- Resource.liftF(
           out.cookies
-            // .map(r => r.domain.fold(r.copy(domain = req.uri.host.map(_.value)))(_ => r))
+            .map(r => r.domain.fold(r.copy(domain = req.uri.host.map(_.value)))(_ => r))
             .traverse_(alg.addCookie(_, req.uri))
         )
       } yield out
